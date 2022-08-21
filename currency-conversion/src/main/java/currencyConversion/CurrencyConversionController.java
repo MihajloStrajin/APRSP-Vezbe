@@ -10,34 +10,70 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestTemplate;
 
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import io.github.resilience4j.retry.annotation.Retry;
+
 @RestController
 public class CurrencyConversionController {
 
 	@Autowired
-	private CurrencyExchangeProxy proxy;
+	private CurrencyExchangeProxy currencyExchangeproxy;
 	
-	@GetMapping("/currency-conversion/from/{from}/to/{to}/quantity/{quantity}")
-	public CurrencyConversion getConversion(@PathVariable String from, @PathVariable String to, @PathVariable BigDecimal quantity) {
+	@Autowired
+	private BankAccountProxy bankProxy;
+
+
+	@GetMapping("/currency-conversion/from/{from}/to/{to}/quantity/{quantity}/user/{email}")
+	@Retry(name = "sample-api", fallbackMethod = "hardCodedResponse")
+	@RateLimiter(name = "default")
+	@Bulkhead(name = "default")
+	public ResponseEntity<Object> getConversionFeign(@PathVariable String from, @PathVariable String to,
+			@PathVariable BigDecimal quantity, @PathVariable String email) {
+
+		BankAccountDto bankAcc = bankProxy.getBankAccount(email);
+		if(bankAcc == null) {
+			return ResponseEntity.ok("BANK ACCOUNT NOT FOUND.");
+		}
 		
-		HashMap<String,String> uriVariables = new HashMap<>();
-		uriVariables.put("from",from);
-		uriVariables.put("to", to);
+		try {
+			if(from.toUpperCase().equals("USD")) {
+				if (bankAcc.getUsd().compareTo(quantity) < 0) {
+					throw new Exception("USD");
+				}
+			}
+			else if(from.toUpperCase().equals("GBP")) {
+				if (bankAcc.getGbp().compareTo(quantity) < 0) {
+					throw new Exception("GBP");
+				}
+			}
+			else if(from.toUpperCase().equals("CHF")) {
+				if (bankAcc.getChf().compareTo(quantity) < 0) {
+					throw new Exception("CHF");
+				}
+			}
+			else if(from.toUpperCase().equals("EUR")) {
+				if (bankAcc.getEur().compareTo(quantity) < 0) {
+					throw new Exception("EUR");
+				}
+			}
+			else if(from.toUpperCase().equals("RSD")) {
+				if (bankAcc.getRsd().compareTo(quantity) < 0) {
+					throw new Exception("RSD");
+				}
+			}
+		}
+		catch (Exception e) {
+			return ResponseEntity.ok("NOT ENOUGH " + e.getMessage());
+		}
+
+		CurrencyConversion temp = currencyExchangeproxy.getExchange(from, to);
 		
-		ResponseEntity<CurrencyConversion> response = new RestTemplate().getForEntity
-				("http://localhost:8000/currency-exchange/from/{from}/to/{to}", CurrencyConversion.class, uriVariables);
-		
-		CurrencyConversion temp = response.getBody();
-		
-		return new CurrencyConversion(temp.getId(),from,to,temp.getConversionMultiple(),quantity,quantity.multiply(temp.getConversionMultiple()), temp.getEnvironment());
+		return ResponseEntity.ok(bankProxy.exchangeCurrency(bankAcc.getEmailAddress(), from, to, quantity, quantity.multiply(temp.getConversionMultiple())));
 	}
 	
-	@GetMapping("/currency-conversion-feign/from/{from}/to/{to}/quantity/{quantity}")
-	public CurrencyConversion getConversionFeign(@PathVariable String from, @PathVariable String to, @PathVariable BigDecimal quantity) {
-		
-		CurrencyConversion temp = proxy.getExchange(from, to);
-		
-		return new CurrencyConversion(temp.getId(),from,to,temp.getConversionMultiple(),quantity,
-				quantity.multiply(temp.getConversionMultiple()), temp.getEnvironment() + "feign");
+	public ResponseEntity<Object> hardCodedResponse(Exception ex) {
+		return ResponseEntity.ok("You can send only 2 requests in 60 seconds!");
 	}
-	
+
 }
